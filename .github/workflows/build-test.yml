@@ -20,9 +20,14 @@ jobs:
       uses: shivammathur/setup-php@v2
       with:
         php-version: ${{ matrix.php-version }}
-        extensions: curl
-        tools: phpize
+        extensions: curl, pcntl, posix, sockets
+        tools: phpize, php-config
         coverage: none
+        ini-values: |
+          extension=http_client.so
+          error_reporting=E_ALL
+          display_errors=On
+          display_startup_errors=On
 
     - name: Install dependencies
       run: |
@@ -31,22 +36,24 @@ jobs:
 
     - name: Build extension
       run: |
-        cd $GITHUB_WORKSPACE
         phpize
-        ./configure
+        ./configure --enable-http-client
+        make clean
         make
         sudo make install
-
-    - name: Configure PHP
-      run: |
-        echo "extension=http_client.so" | sudo tee -a "$(php -r 'echo php_ini_loaded_file();')"
+        php -m
 
     - name: Run tests
       run: |
+        echo "PHP Version and Configuration:"
         php -v
         php -m
+        php -i | grep -i curl
+        echo "Running tests:"
         php test.php
-        php test_async.php
+        if [ -f "test_async.php" ]; then
+          php test_async.php
+        fi
 
   lint:
     runs-on: ubuntu-latest
