@@ -1,6 +1,15 @@
 # PHP HTTP Client Extension
 
-A PHP extension for making HTTP requests, similar to Guzzle but implemented in C for better performance.
+A high-performance HTTP client extension for PHP that supports both synchronous and asynchronous requests. Built with libcurl for optimal performance and reliability.
+
+## Features
+
+- Synchronous and asynchronous HTTP requests
+- Support for GET, POST, PUT, and DELETE methods
+- Base URL configuration
+- Custom header management
+- JSON request/response handling
+- Thread-safe implementation
 
 ## Building
 
@@ -17,5 +26,41 @@ Add the following line to your php.ini:
 extension=http_client.so
 ```
 
-## Usage
-More documentation will be added as features are implemented.
+## Basic Usage
+
+```php
+// Initialize with base URL and headers
+$client = new HttpClient('https://api.example.com', [
+    'User-Agent' => 'PHP HTTP Client',
+    'Accept' => 'application/json'
+]);
+
+// GET request
+$client->get('/users/123');
+echo $client->getStatusCode();
+echo $client->getResponseBody();
+
+// POST request with JSON data
+$data = json_encode(['name' => 'John Doe']);
+$client->post('/users', $data);
+```
+
+## Documentation
+
+For detailed documentation including:
+- Complete API reference
+- Advanced usage examples
+- Error handling
+- Thread safety
+- Performance considerations
+- Contributing guidelines
+
+Please see [docs.md](docs.md).
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Support
+
+For bugs and feature requests, please use the GitHub issues system.
