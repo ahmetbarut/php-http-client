@@ -38,7 +38,7 @@ jobs:
 
     - name: Configure PHP
       run: |
-        echo "extension=http_client.so" | sudo tee -a /etc/php/${{ matrix.php-version }}/cli/php.ini
+        echo "extension=http_client.so" | sudo tee -a "$(php -r 'echo php_ini_loaded_file();')"
 
     - name: Run tests
       run: |

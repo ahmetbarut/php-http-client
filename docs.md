@@ -10,12 +10,13 @@ A high-performance HTTP client extension for PHP that supports both synchronous 
 - Custom header management
 - JSON request/response handling
 - Thread-safe implementation
+- Supports PHP 8.0+
 
 ## Installation
 
 ### Requirements
 
-- PHP 7.0 or higher
+- PHP 8.0 or higher
 - libcurl
 - pthread support
 
