@@ -95,10 +95,11 @@ static char *build_full_url(http_client_object *intern, const char *path)
     len = strlen(intern->base_url) + strlen(path) + 2;
     full_url = emalloc(len);
     
-    snprintf(full_url, len, "%s%s%s", 
-        intern->base_url,
-        (intern->base_url[strlen(intern->base_url) - 1] == '/' || path[0] == '/') ? "" : "/",
-        (*path == '/' ? path + 1 : path));
+    if (path[0] == '/') {
+        snprintf(full_url, len, "%s%s", intern->base_url, path);
+    } else {
+        snprintf(full_url, len, "%s/%s", intern->base_url, path);
+    }
     
     return full_url;
 }
@@ -165,7 +166,170 @@ static void *async_request_thread(void *arg)
     return NULL;
 }
 
-/* {{{ HttpClient methods */
+/* {{{ PHP_MINIT_FUNCTION */
+PHP_MINIT_FUNCTION(http_client)
+{
+    zend_class_entry ce;
+    INIT_CLASS_ENTRY(ce, "HttpClient", http_client_methods);
+    http_client_ce = zend_register_internal_class(&ce);
+    
+    memcpy(&http_client_object_handlers, zend_get_std_object_handlers(), sizeof(zend_object_handlers));
+    http_client_object_handlers.offset = XtOffsetOf(http_client_object, std);
+    http_client_object_handlers.free_obj = http_client_free_obj;
+    http_client_ce->create_object = http_client_create_object;
+    
+    curl_global_init(CURL_GLOBAL_ALL);
+    
+    return SUCCESS;
+}
+/* }}} */
+
+/* {{{ PHP_MSHUTDOWN_FUNCTION */
+PHP_MSHUTDOWN_FUNCTION(http_client)
+{
+    curl_global_cleanup();
+    return SUCCESS;
+}
+/* }}} */
+
+/* {{{ PHP_MINFO_FUNCTION */
+PHP_MINFO_FUNCTION(http_client)
+{
+    php_info_print_table_start();
+    php_info_print_table_header(2, "http_client support", "enabled");
+    php_info_print_table_row(2, "Version", PHP_HTTP_CLIENT_VERSION);
+    php_info_print_table_row(2, "libcurl Version", curl_version_info(CURLVERSION_NOW)->version);
+    php_info_print_table_end();
+}
+/* }}} */
+
+/* {{{ Object creation/destruction */
+static void http_client_free_obj(zend_object *obj)
+{
+    http_client_object *intern = http_client_from_obj(obj);
+    if (intern->base_url) {
+        efree(intern->base_url);
+    }
+    if (intern->headers) {
+        curl_slist_free_all(intern->headers);
+    }
+    zend_object_std_dtor(&intern->std);
+}
+
+zend_object *http_client_create_object(zend_class_entry *ce)
+{
+    http_client_object *intern = ecalloc(1, sizeof(http_client_object) + zend_object_properties_size(ce));
+    
+    zend_object_std_init(&intern->std, ce);
+    object_properties_init(&intern->std, ce);
+    
+    intern->std.handlers = &http_client_object_handlers;
+    
+    return &intern->std;
+}
+
+/**
+ * Callback function for handling CURL write operations
+ */
+static size_t write_callback(void *contents, size_t size, size_t nmemb, void *userp)
+{
+    size_t realsize = size * nmemb;
+    char **response = (char **)userp;
+    
+    *response = erealloc(*response, realsize + 1);
+    if(*response == NULL) {
+        return 0;
+    }
+    
+    memcpy(*response, contents, realsize);
+    (*response)[realsize] = 0;
+    
+    return realsize;
+}
+
+/**
+ * Build full URL from base URL and path
+ */
+static char *build_full_url(http_client_object *intern, const char *path)
+{
+    char *full_url;
+    size_t len;
+    
+    if (!intern->base_url) {
+        return estrdup(path);
+    }
+    
+    len = strlen(intern->base_url) + strlen(path) + 2;
+    full_url = emalloc(len);
+    
+    if (path[0] == '/') {
+        snprintf(full_url, len, "%s%s", intern->base_url, path);
+    } else {
+        snprintf(full_url, len, "%s/%s", intern->base_url, path);
+    }
+    
+    return full_url;
+}
+
+/**
+ * Performs HTTP request synchronously
+ */
+static int perform_request(char *url, char *method, char *data, struct curl_slist *headers)
+{
+    CURL *curl;
+    CURLcode res;
+    char *response = NULL;
+    
+    curl = curl_easy_init();
+    if(curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+        
+        if(headers) {
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        }
+        
+        if(strcmp(method, "POST") == 0) {
+            curl_easy_setopt(curl, CURLOPT_POST, 1L);
+            if(data) {
+                curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+            }
+        }
+        else if(strcmp(method, "PUT") == 0) {
+            curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
+            if(data) {
+                curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+            }
+        }
+        else if(strcmp(method, "DELETE") == 0) {
+            curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+        }
+        
+        res = curl_easy_perform(curl);
+        
+        if(res != CURLE_OK) {
+            HTTP_CLIENT_G(last_error) = estrdup(curl_easy_strerror(res));
+            curl_easy_cleanup(curl);
+            if(response) efree(response);
+            return 0;
+        }
+        
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &HTTP_CLIENT_G(status_code));
+        HTTP_CLIENT_G(response_body) = response;
+        
+        curl_easy_cleanup(curl);
+        return 1;
+    }
+    
+    return 0;
+}
+
+/* Class method implementations */
+
+/**
+ * HttpClient constructor
+ */
 PHP_METHOD(HttpClient, __construct)
 {
     char *base_url = NULL;
@@ -191,265 +355,169 @@ PHP_METHOD(HttpClient, __construct)
         ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARRVAL_P(headers), key, entry) {
             if(key) {
                 char header_line[1024];
+                convert_to_string(entry);
                 snprintf(header_line, sizeof(header_line), "%s: %s", ZSTR_VAL(key), Z_STRVAL_P(entry));
                 obj->headers = curl_slist_append(obj->headers, header_line);
             }
         } ZEND_HASH_FOREACH_END();
     }
-    
-    HTTP_CLIENT_G(response_body) = NULL;
-    HTTP_CLIENT_G(status_code) = 0;
-    HTTP_CLIENT_G(last_error) = NULL;
-    HTTP_CLIENT_G(async_ctx) = NULL;
 }
 
-/* Synchronous methods */
+/* HTTP Methods */
+
+/* {{{ proto bool HttpClient::get(string $path) */
 PHP_METHOD(HttpClient, get)
 {
     char *path;
     size_t path_len;
-    CURL *curl;
+    char *url;
     http_client_object *intern;
-    char *full_url;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &path, &path_len) == FAILURE) {
-        RETURN_FALSE;
-    }
-
+    
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_STRING(path, path_len)
+    ZEND_PARSE_PARAMETERS_END();
+    
     intern = Z_HTTP_CLIENT_P(getThis());
-    full_url = build_full_url(intern, path);
-
-    curl = curl_easy_init();
-    if (curl) {
-        if (perform_request(curl, full_url, NULL, "GET", &HTTP_CLIENT_G(response_body), 
-                          &HTTP_CLIENT_G(status_code), &HTTP_CLIENT_G(last_error), intern->headers)) {
-            efree(full_url);
-            curl_easy_cleanup(curl);
-            RETURN_TRUE;
-        }
-        curl_easy_cleanup(curl);
+    url = build_full_url(intern, path);
+    
+    if (perform_request(url, "GET", NULL, intern->headers)) {
+        efree(url);
+        RETURN_TRUE;
     }
-    efree(full_url);
+    
+    efree(url);
     RETURN_FALSE;
 }
+/* }}} */
 
+/* {{{ proto bool HttpClient::post(string $path, string $data) */
 PHP_METHOD(HttpClient, post)
 {
-    char *path, *post_data;
-    size_t path_len, post_data_len;
-    CURL *curl;
+    char *path, *data = NULL;
+    size_t path_len, data_len;
+    char *url;
     http_client_object *intern;
-    char *full_url;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ss", &path, &path_len, &post_data, &post_data_len) == FAILURE) {
-        RETURN_FALSE;
-    }
-
+    
+    ZEND_PARSE_PARAMETERS_START(1, 2)
+        Z_PARAM_STRING(path, path_len)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_STRING(data, data_len)
+    ZEND_PARSE_PARAMETERS_END();
+    
     intern = Z_HTTP_CLIENT_P(getThis());
-    full_url = build_full_url(intern, path);
-
-    curl = curl_easy_init();
-    if (curl) {
-        if (perform_request(curl, full_url, post_data, "POST", &HTTP_CLIENT_G(response_body),
-                          &HTTP_CLIENT_G(status_code), &HTTP_CLIENT_G(last_error), intern->headers)) {
-            efree(full_url);
-            curl_easy_cleanup(curl);
-            RETURN_TRUE;
-        }
-        curl_easy_cleanup(curl);
+    url = build_full_url(intern, path);
+    
+    if (perform_request(url, "POST", data, intern->headers)) {
+        efree(url);
+        RETURN_TRUE;
     }
-    efree(full_url);
+    
+    efree(url);
     RETURN_FALSE;
 }
+/* }}} */
 
+/* {{{ proto bool HttpClient::put(string $path, string $data) */
 PHP_METHOD(HttpClient, put)
 {
-    char *path, *put_data;
-    size_t path_len, put_data_len;
-    CURL *curl;
+    char *path, *data = NULL;
+    size_t path_len, data_len;
+    char *url;
     http_client_object *intern;
-    char *full_url;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ss", &path, &path_len, &put_data, &put_data_len) == FAILURE) {
-        RETURN_FALSE;
-    }
-
+    
+    ZEND_PARSE_PARAMETERS_START(1, 2)
+        Z_PARAM_STRING(path, path_len)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_STRING(data, data_len)
+    ZEND_PARSE_PARAMETERS_END();
+    
     intern = Z_HTTP_CLIENT_P(getThis());
-    full_url = build_full_url(intern, path);
-
-    curl = curl_easy_init();
-    if (curl) {
-        if (perform_request(curl, full_url, put_data, "PUT", &HTTP_CLIENT_G(response_body),
-                          &HTTP_CLIENT_G(status_code), &HTTP_CLIENT_G(last_error), intern->headers)) {
-            efree(full_url);
-            curl_easy_cleanup(curl);
-            RETURN_TRUE;
-        }
-        curl_easy_cleanup(curl);
+    url = build_full_url(intern, path);
+    
+    if (perform_request(url, "PUT", data, intern->headers)) {
+        efree(url);
+        RETURN_TRUE;
     }
-    efree(full_url);
+    
+    efree(url);
     RETURN_FALSE;
 }
+/* }}} */
 
+/* {{{ proto bool HttpClient::delete(string $path) */
 PHP_METHOD(HttpClient, delete)
 {
     char *path;
     size_t path_len;
-    CURL *curl;
+    char *url;
     http_client_object *intern;
-    char *full_url;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &path, &path_len) == FAILURE) {
-        RETURN_FALSE;
-    }
-
+    
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_STRING(path, path_len)
+    ZEND_PARSE_PARAMETERS_END();
+    
     intern = Z_HTTP_CLIENT_P(getThis());
-    full_url = build_full_url(intern, path);
-
-    curl = curl_easy_init();
-    if (curl) {
-        if (perform_request(curl, full_url, NULL, "DELETE", &HTTP_CLIENT_G(response_body),
-                          &HTTP_CLIENT_G(status_code), &HTTP_CLIENT_G(last_error), intern->headers)) {
-            efree(full_url);
-            curl_easy_cleanup(curl);
-            RETURN_TRUE;
-        }
-        curl_easy_cleanup(curl);
+    url = build_full_url(intern, path);
+    
+    if (perform_request(url, "DELETE", NULL, intern->headers)) {
+        efree(url);
+        RETURN_TRUE;
     }
-    efree(full_url);
+    
+    efree(url);
     RETURN_FALSE;
 }
+/* }}} */
 
-/* Asynchronous methods */
-static void start_async_request(INTERNAL_FUNCTION_PARAMETERS, const char *method)
-{
-    char *path, *data = NULL;
-    size_t path_len, data_len;
-    http_client_object *intern;
-    char *full_url;
-
-    if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) {
-        if (zend_parse_parameters(ZEND_NUM_ARGS(), "ss", &path, &path_len, &data, &data_len) == FAILURE) {
-            RETURN_FALSE;
-        }
-    } else {
-        if (zend_parse_parameters(ZEND_NUM_ARGS(), "s", &path, &path_len) == FAILURE) {
-            RETURN_FALSE;
-        }
-    }
-
-    if (HTTP_CLIENT_G(async_ctx) != NULL) {
-        php_error_docref(NULL, E_WARNING, "Another async request is already in progress");
-        RETURN_FALSE;
-    }
-
-    intern = Z_HTTP_CLIENT_P(getThis());
-    full_url = build_full_url(intern, path);
-
-    HTTP_CLIENT_G(async_ctx) = emalloc(sizeof(http_client_async_ctx));
-    HTTP_CLIENT_G(async_ctx)->url = full_url;
-    HTTP_CLIENT_G(async_ctx)->method = estrdup(method);
-    HTTP_CLIENT_G(async_ctx)->data = data ? estrdup(data) : NULL;
-    HTTP_CLIENT_G(async_ctx)->is_complete = 0;
-    HTTP_CLIENT_G(async_ctx)->response = NULL;
-    HTTP_CLIENT_G(async_ctx)->error = NULL;
-    HTTP_CLIENT_G(async_ctx)->headers = intern->headers;
-
-    pthread_create(&HTTP_CLIENT_G(async_ctx)->thread, NULL, async_request_thread, HTTP_CLIENT_G(async_ctx));
-    RETURN_TRUE;
-}
-
-PHP_METHOD(HttpClient, getAsync)
-{
-    start_async_request(INTERNAL_FUNCTION_PARAM_PASSTHRU, "GET");
-}
-
-PHP_METHOD(HttpClient, postAsync)
-{
-    start_async_request(INTERNAL_FUNCTION_PARAM_PASSTHRU, "POST");
-}
-
-PHP_METHOD(HttpClient, putAsync)
-{
-    start_async_request(INTERNAL_FUNCTION_PARAM_PASSTHRU, "PUT");
-}
-
-PHP_METHOD(HttpClient, deleteAsync)
-{
-    start_async_request(INTERNAL_FUNCTION_PARAM_PASSTHRU, "DELETE");
-}
-
-PHP_METHOD(HttpClient, wait)
-{
-    if (HTTP_CLIENT_G(async_ctx) == NULL) {
-        RETURN_FALSE;
-    }
-
-    pthread_join(HTTP_CLIENT_G(async_ctx)->thread, NULL);
-
-    if (HTTP_CLIENT_G(async_ctx)->error) {
-        HTTP_CLIENT_G(last_error) = HTTP_CLIENT_G(async_ctx)->error;
-        RETVAL_FALSE;
-    } else {
-        HTTP_CLIENT_G(response_body) = HTTP_CLIENT_G(async_ctx)->response;
-        HTTP_CLIENT_G(status_code) = HTTP_CLIENT_G(async_ctx)->status_code;
-        RETVAL_TRUE;
-    }
-
-    efree(HTTP_CLIENT_G(async_ctx)->url);
-    efree(HTTP_CLIENT_G(async_ctx)->method);
-    if (HTTP_CLIENT_G(async_ctx)->data) {
-        efree(HTTP_CLIENT_G(async_ctx)->data);
-    }
-    efree(HTTP_CLIENT_G(async_ctx));
-    HTTP_CLIENT_G(async_ctx) = NULL;
-}
-
-PHP_METHOD(HttpClient, setHeader)
-{
-    char *key, *value;
-    size_t key_len, value_len;
-    http_client_object *intern;
-    char *header_line;
-    size_t header_line_len;
-
-    if (zend_parse_parameters(ZEND_NUM_ARGS(), "ss", &key, &key_len, &value, &value_len) == FAILURE) {
-        RETURN_FALSE;
-    }
-
-    intern = Z_HTTP_CLIENT_P(getThis());
-    
-    header_line_len = key_len + value_len + 3;
-    header_line = emalloc(header_line_len);
-    
-    snprintf(header_line, header_line_len, "%s: %s", key, value);
-    
-    intern->headers = curl_slist_append(intern->headers, header_line);
-    efree(header_line);
-    
-    RETURN_TRUE;
-}
-
+/* {{{ proto array HttpClient::getHeaders() */
 PHP_METHOD(HttpClient, getHeaders)
 {
     http_client_object *intern;
     struct curl_slist *list;
-    array_init(return_value);
-
+    char *header, *value;
+    
     intern = Z_HTTP_CLIENT_P(getThis());
     
-    if (intern->headers) {
-        for (list = intern->headers; list; list = list->next) {
-            add_next_index_string(return_value, list->data);
-        }
+    array_init(return_value);
+    
+    list = intern->headers;
+    while(list) {
+        add_next_index_string(return_value, list->data);
+        list = list->next;
     }
 }
+/* }}} */
 
+/* {{{ proto bool HttpClient::setHeader(string $key, string $value) */
+PHP_METHOD(HttpClient, setHeader)
+{
+    char *key, *value;
+    size_t key_len, value_len;
+    char header_line[1024];
+    http_client_object *intern;
+    
+    ZEND_PARSE_PARAMETERS_START(2, 2)
+        Z_PARAM_STRING(key, key_len)
+        Z_PARAM_STRING(value, value_len)
+    ZEND_PARSE_PARAMETERS_END();
+    
+    intern = Z_HTTP_CLIENT_P(getThis());
+    
+    snprintf(header_line, sizeof(header_line), "%s: %s", key, value);
+    intern->headers = curl_slist_append(intern->headers, header_line);
+    
+    RETURN_TRUE;
+}
+/* }}} */
+
+/* {{{ proto int HttpClient::getStatusCode() */
 PHP_METHOD(HttpClient, getStatusCode)
 {
     RETURN_LONG(HTTP_CLIENT_G(status_code));
 }
+/* }}} */
 
+/* {{{ proto string HttpClient::getResponseBody() */
 PHP_METHOD(HttpClient, getResponseBody)
 {
     if (HTTP_CLIENT_G(response_body)) {
@@ -459,84 +527,19 @@ PHP_METHOD(HttpClient, getResponseBody)
 }
 /* }}} */
 
-/* {{{ arginfo */
-ZEND_BEGIN_ARG_INFO_EX(arginfo_http_client_void, 0, 0, 0)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_http_client_construct, 0, 0, 0)
-    ZEND_ARG_INFO(0, base_url)
-    ZEND_ARG_INFO(0, headers)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_http_client_request, 0, 0, 1)
-    ZEND_ARG_INFO(0, url)
-    ZEND_ARG_INFO(0, data)
-ZEND_END_ARG_INFO()
-
-ZEND_BEGIN_ARG_INFO_EX(arginfo_http_client_header, 0, 0, 2)
-    ZEND_ARG_INFO(0, key)
-    ZEND_ARG_INFO(0, value)
-ZEND_END_ARG_INFO()
-/* }}} */
-
 /* {{{ http_client_functions[] */
 static const zend_function_entry http_client_methods[] = {
-    PHP_ME(HttpClient, __construct,    arginfo_http_client_construct, ZEND_ACC_PUBLIC | ZEND_ACC_CTOR)
+    PHP_ME(HttpClient, __construct,    arginfo_http_client_construct, ZEND_ACC_PUBLIC)
     PHP_ME(HttpClient, get,            arginfo_http_client_request, ZEND_ACC_PUBLIC)
     PHP_ME(HttpClient, post,           arginfo_http_client_request, ZEND_ACC_PUBLIC)
     PHP_ME(HttpClient, put,            arginfo_http_client_request, ZEND_ACC_PUBLIC)
     PHP_ME(HttpClient, delete,         arginfo_http_client_request, ZEND_ACC_PUBLIC)
-    PHP_ME(HttpClient, getAsync,       arginfo_http_client_request, ZEND_ACC_PUBLIC)
-    PHP_ME(HttpClient, postAsync,      arginfo_http_client_request, ZEND_ACC_PUBLIC)
-    PHP_ME(HttpClient, putAsync,       arginfo_http_client_request, ZEND_ACC_PUBLIC)
-    PHP_ME(HttpClient, deleteAsync,    arginfo_http_client_request, ZEND_ACC_PUBLIC)
-    PHP_ME(HttpClient, wait,           arginfo_http_client_void,     ZEND_ACC_PUBLIC)
-    PHP_ME(HttpClient, setHeader,      arginfo_http_client_header,   ZEND_ACC_PUBLIC)
-    PHP_ME(HttpClient, getHeaders,     arginfo_http_client_void,     ZEND_ACC_PUBLIC)
-    PHP_ME(HttpClient, getStatusCode,  arginfo_http_client_void,     ZEND_ACC_PUBLIC)
-    PHP_ME(HttpClient, getResponseBody, arginfo_http_client_void,    ZEND_ACC_PUBLIC)
+    PHP_ME(HttpClient, setHeader,      arginfo_http_client_header, ZEND_ACC_PUBLIC)
+    PHP_ME(HttpClient, getHeaders,     arginfo_http_client_void, ZEND_ACC_PUBLIC)
+    PHP_ME(HttpClient, getStatusCode,  arginfo_http_client_void, ZEND_ACC_PUBLIC)
+    PHP_ME(HttpClient, getResponseBody, arginfo_http_client_void, ZEND_ACC_PUBLIC)
     PHP_FE_END
 };
-/* }}} */
-
-/* {{{ PHP_MINIT_FUNCTION */
-PHP_MINIT_FUNCTION(http_client)
-{
-    zend_class_entry ce;
-    INIT_CLASS_ENTRY(ce, "HttpClient", http_client_methods);
-    
-    http_client_ce = zend_register_internal_class(&ce);
-    http_client_ce->create_object = http_client_create_object;
-    
-    memcpy(&http_client_object_handlers, zend_get_std_object_handlers(), sizeof(zend_object_handlers));
-    http_client_object_handlers.offset = XtOffsetOf(http_client_object, std);
-    http_client_object_handlers.free_obj = http_client_free_object;
-    
-    return SUCCESS;
-}
-/* }}} */
-
-/* {{{ PHP_MSHUTDOWN_FUNCTION */
-PHP_MSHUTDOWN_FUNCTION(http_client)
-{
-    if (HTTP_CLIENT_G(response_body)) {
-        efree(HTTP_CLIENT_G(response_body));
-    }
-    if (HTTP_CLIENT_G(last_error)) {
-        efree(HTTP_CLIENT_G(last_error));
-    }
-    return SUCCESS;
-}
-/* }}} */
-
-/* {{{ PHP_MINFO_FUNCTION */
-PHP_MINFO_FUNCTION(http_client)
-{
-    php_info_print_table_start();
-    php_info_print_table_header(2, "http_client support", "enabled");
-    php_info_print_table_row(2, "Version", PHP_HTTP_CLIENT_VERSION);
-    php_info_print_table_end();
-}
 /* }}} */
 
 /* {{{ http_client_module_entry */
@@ -555,5 +558,8 @@ zend_module_entry http_client_module_entry = {
 /* }}} */
 
 #ifdef COMPILE_DL_HTTP_CLIENT
+#ifdef ZTS
+ZEND_TSRMLS_CACHE_DEFINE()
+#endif
 ZEND_GET_MODULE(http_client)
 #endif
