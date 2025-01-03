@@ -1,5 +1,7 @@
 # PHP HTTP Client Extension
 
+[![Build and Test](https://github.com/username/php-http-client/actions/workflows/build-test.yml/badge.svg)](https://github.com/username/php-http-client/actions/workflows/build-test.yml)
+
 A high-performance HTTP client extension for PHP that supports both synchronous and asynchronous requests. Built with libcurl for optimal performance and reliability.
 
 ## Features

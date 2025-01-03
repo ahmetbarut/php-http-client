@@ -1,0 +1,74 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php-version: ['7.4', '8.0', '8.1', '8.2']
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ matrix.php-version }}
+        extensions: curl
+        tools: phpize
+        coverage: none
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libcurl4-openssl-dev
+
+    - name: Build extension
+      run: |
+        phpize
+        ./configure
+        make
+        sudo make install
+
+    - name: Configure PHP
+      run: |
+        echo "extension=http_client.so" | sudo tee -a /etc/php/${{ matrix.php-version }}/cli/php.ini
+
+    - name: Run tests
+      run: |
+        php test.php
+        php test_async.php
+
+  lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Lint C files
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format
+        find . -name "*.c" -o -name "*.h" | xargs clang-format -i --style=LLVM
+        git diff --exit-code
+
+  static-analysis:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install cppcheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cppcheck
+
+    - name: Run static analysis
+      run: |
+        cppcheck --enable=all --suppress=missingIncludeSystem .
