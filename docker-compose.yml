@@ -1,0 +1,8 @@
+version: '3'
+services:
+  php:
+    build: .
+    volumes:
+      - .:/usr/src/php-http-client
+    working_dir: /usr/src/php-http-client
+    command: tail -f /dev/null  # Container'ı çalışır durumda tutar
