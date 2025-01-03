@@ -171,37 +171,29 @@ PHP_METHOD(HttpClient, __construct)
     char *base_url = NULL;
     size_t base_url_len = 0;
     zval *headers = NULL;
-    http_client_object *intern;
     
     ZEND_PARSE_PARAMETERS_START(0, 2)
         Z_PARAM_OPTIONAL
-        Z_PARAM_STRING_OR_NULL(base_url, base_url_len)
-        Z_PARAM_ARRAY_OR_NULL(headers)
+        Z_PARAM_STRING_EX(base_url, base_url_len, 1, 0)
+        Z_PARAM_ARRAY_EX(headers, 1, 0)
     ZEND_PARSE_PARAMETERS_END();
     
-    intern = Z_HTTP_CLIENT_P(getThis());
+    http_client_object *obj = Z_HTTP_CLIENT_P(getThis());
     
-    if (base_url) {
-        intern->base_url = estrndup(base_url, base_url_len);
+    if(base_url && base_url_len > 0) {
+        obj->base_url = estrndup(base_url, base_url_len);
     }
     
-    if (headers) {
-        zval *header_value;
-        zend_string *header_key;
+    if(headers) {
+        zval *entry;
+        zend_string *key;
         
-        ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARRVAL_P(headers), header_key, header_value) {
-            char *header_line;
-            size_t header_line_len;
-            
-            convert_to_string(header_value);
-            
-            header_line_len = ZSTR_LEN(header_key) + Z_STRLEN_P(header_value) + 3;
-            header_line = emalloc(header_line_len);
-            
-            snprintf(header_line, header_line_len, "%s: %s", ZSTR_VAL(header_key), Z_STRVAL_P(header_value));
-            
-            intern->headers = curl_slist_append(intern->headers, header_line);
-            efree(header_line);
+        ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARRVAL_P(headers), key, entry) {
+            if(key) {
+                char header_line[1024];
+                snprintf(header_line, sizeof(header_line), "%s: %s", ZSTR_VAL(key), Z_STRVAL_P(entry));
+                obj->headers = curl_slist_append(obj->headers, header_line);
+            }
         } ZEND_HASH_FOREACH_END();
     }
     
